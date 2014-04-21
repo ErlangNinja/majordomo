@@ -1,0 +1,12 @@
+env.mak
+rebar
+relx
+
+rel
+deps
+ebin
+.eunit
+
+dialyzer.log
+*.dump
+*.plt

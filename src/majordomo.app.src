@@ -1,0 +1,15 @@
+{application, majordomo, [
+    {description, "Majordomo ZeroMQ Service Router"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {registered, [majordomo_sup]},
+    {applications, [
+        kernel,
+        stdlib,
+        sasl,
+        gen_listener_tcp,
+        ezmq
+    ]},
+    {mod, {majordomo_app, []}},
+    {env, []}
+]}.
