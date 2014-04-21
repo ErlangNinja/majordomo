@@ -25,28 +25,12 @@ setup() ->
     application:start(sasl),
     application:start(gen_listener_tcp),
     application:start(ezmq),
-    %%{ok, Broker} = majordomo_broker:start(5555),
+    majordomo_broker:start(5555),
     majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
     majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
     majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
     majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
-    Count = fun Loop(Requests, Replies) ->
-        receive
-            {request, _Service, _Request} ->
-                Loop(Requests + 1, Replies);
-            {reply, _Service, _Reply} ->
-                Loop(Requests, Replies + 1);
-            {From, get_count} ->
-                From ! {count, Requests, Replies},
-                Loop(Requests, Replies);
-            stop ->
-                ok;
-            Response ->
-                ?debugFmt("Response: ~p", [Response]),
-                Loop(Requests, Replies)
-        end
-    end,
-    Counter = spawn(fun() -> Count(0, 0) end),
+    Counter = spawn(fun() -> count_loop(0, 0) end),
     Socket = majordomo_client:start("127.0.0.1", 5555, Counter),
     {Socket, Counter}.
 
@@ -61,26 +45,42 @@ tests({Socket, Callback}) ->
 test_client(Socket, Counter) ->
     Count = 10000,
     Start = now(),
-    Send = fun
-        Loop(0) ->
-            ok;
-        Loop(C) ->
-            majordomo_client:send(Socket, <<"echo">>, <<"test">>),
-            Counter ! {request, <<"echo">>, <<"test">>},
-            Loop(C - 1)
-    end,
-    spawn(fun() -> Send(Count) end),
-    wait_for_responses(Counter, Count),
+    spawn(fun() -> send_loop(Socket, Counter, Count) end),
+    wait_loop(Counter, Count),
     ?debugFmt("~p msg/sec", [Count * 1000000 / timer:now_diff(now(), Start)]),
     ok.
 
-wait_for_responses(Receiver, Count) ->
-    Receiver ! {self(), get_count},
+send_loop(_Socket, _Counter, 0) ->
+    ok;
+
+send_loop(Socket, Counter, Count) ->
+    majordomo_client:send(Socket, <<"echo">>, <<"test">>),
+    Counter ! {request, <<"echo">>, <<"test">>},
+    send_loop(Socket, Counter, Count - 1).
+
+count_loop(Requests, Replies) ->
+    receive
+        {request, _Service, _Request} ->
+            count_loop(Requests + 1, Replies);
+        {reply, _Service, _Reply} ->
+            count_loop(Requests, Replies + 1);
+        {From, get_count} ->
+            From ! {count, Requests, Replies},
+            count_loop(Requests, Replies);
+        stop ->
+            ok;
+        Response ->
+            ?debugFmt("Response: ~p", [Response]),
+            count_loop(Requests, Replies)
+    end.
+
+wait_loop(Counter, Count) ->
+    Counter ! {self(), get_count},
     receive
         {count, _Requests, Count} ->
             Count;
         {count, Requests, Replies} ->
             ?debugFmt("~p requests, ~p replies", [Requests, Replies]),
             timer:sleep(100),
-            wait_for_responses(Receiver, Count)
+            wait_loop(Counter, Count)
     end.

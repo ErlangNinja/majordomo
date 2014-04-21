@@ -30,72 +30,68 @@ start(Address, Port, Service, Dispatch) ->
         service = Service,
         dispatch = Dispatch
     },
-    Pid = spawn(fun() -> Loop = work_loop(), Loop(InitialState) end),
-    timer:send_interval(?HEARTBEAT_INTERVAL, Pid, {heartbeat, send}),
-    Pid.
+    Worker = spawn(fun() -> work_loop(InitialState) end),
+    timer:send_interval(?HEARTBEAT_INTERVAL, Worker, {heartbeat, send}),
+    Worker.
 
 close(Worker) ->
     Worker ! close,
     ok.
 
-work_loop() ->
+work_loop(State = #state{socket = undefined}) ->
     Worker = self(),
-    fun
-        Loop(State = #state{socket = undefined}) ->
-            {ok, Socket} = ezmq:start([{type, dealer}]),
-            spawn(fun() -> RecvLoop = recv_loop(), RecvLoop(Socket, Worker) end),
-            ezmq:connect(Socket, tcp, State#state.address, State#state.port, []),
-            ezmq:send(Socket, [?MDP_WORKER_HEADER, ?MDP_READY_CMD, State#state.service]),
-            Loop(State#state{socket = Socket});
-        Loop(State = #state{dispatch = Dispatch}) ->
-            receive
-                {request, Client, Request} when is_pid(Dispatch) ->
-                    Dispatch ! {request, Worker, Client, Request},
-                    Loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
-                {request, Client, Request} ->
-                    ezmq:send(State#state.socket, [?MDP_WORKER_HEADER, ?MDP_REPLY_CMD, Client, <<>>, Dispatch(Request)]),
-                    Loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
-                {reply, Client, Response} ->
-                    ezmq:send(State#state.socket, [?MDP_WORKER_HEADER, ?MDP_REPLY_CMD, Client, <<>>, Response]),
-                    Loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
-                {heartbeat, recv} ->
-                    Loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
-                {heartbeat, send} ->
-                    if
-                        State#state.liveness < 1 ->
-                            ezmq:close(State#state.socket),
-                            Loop(State#state{socket = undefined, liveness = ?HEARTBEAT_LIVENESS});
-                        true ->
-                            ezmq:send(State#state.socket, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]),
-                            Loop(State#state{liveness = State#state.liveness - 1})
-                    end;
-                disconnect ->
+    {ok, Socket} = ezmq:start([{type, dealer}]),
+    spawn(fun() -> recv_loop(Socket, Worker) end),
+    ezmq:connect(Socket, tcp, State#state.address, State#state.port, []),
+    ezmq:send(Socket, [?MDP_WORKER_HEADER, ?MDP_READY_CMD, State#state.service]),
+    work_loop(State#state{socket = Socket});
+
+work_loop(State = #state{dispatch = Dispatch}) ->
+    receive
+        {request, Client, Request} when is_pid(Dispatch) ->
+            Dispatch ! {request, self(), Client, Request},
+            work_loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
+        {request, Client, Request} ->
+            ezmq:send(State#state.socket, [?MDP_WORKER_HEADER, ?MDP_REPLY_CMD, Client, <<>>, Dispatch(Request)]),
+            work_loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
+        {reply, Client, Response} ->
+            ezmq:send(State#state.socket, [?MDP_WORKER_HEADER, ?MDP_REPLY_CMD, Client, <<>>, Response]),
+            work_loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
+        {heartbeat, recv} ->
+            work_loop(State#state{liveness = ?HEARTBEAT_LIVENESS});
+        {heartbeat, send} ->
+            if
+                State#state.liveness < 1 ->
                     ezmq:close(State#state.socket),
-                    Loop(State#state{socket = undefined, liveness = ?HEARTBEAT_LIVENESS});
-                close ->
-                    ezmq:close(State#state.socket);
-                Cmd ->
-                    error_logger:warning_msg("Unexpected command: ~p", [Cmd]),
-                    Loop(State)
-            end
+                    work_loop(State#state{socket = undefined, liveness = ?HEARTBEAT_LIVENESS});
+                true ->
+                    ezmq:send(State#state.socket, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]),
+                    work_loop(State#state{liveness = State#state.liveness - 1})
+            end;
+        disconnect ->
+            ezmq:close(State#state.socket),
+            work_loop(State#state{socket = undefined, liveness = ?HEARTBEAT_LIVENESS});
+        close ->
+            ezmq:close(State#state.socket);
+        Cmd ->
+            error_logger:warning_msg("Unexpected command: ~p", [Cmd]),
+            work_loop(State)
     end.
 
-recv_loop() ->
-    fun Loop(Socket, Worker) ->
-        case catch ezmq:recv(Socket) of
-            {ok, [?MDP_WORKER_HEADER, ?MDP_REQUEST_CMD, Client, <<>>, Request]} ->
-                Worker ! {request, Client, Request},
-                Loop(Socket, Worker);
-            {ok, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]} ->
-                Worker ! {heartbeat, recv},
-                Loop(Socket, Worker);
-            {ok, [?MDP_WORKER_HEADER, ?MDP_DISCONNECT_CMD]} ->
-                Worker ! disconnect,
-                Loop(Socket, Worker);
-            {'EXIT', _Reason} ->
-                ok;
-            Reply ->
-                error_logger:warning_msg("Unexpected reply: ~p", [Reply]),
-                Loop(Socket, Worker)
-        end
+recv_loop(Socket, Worker) ->
+    case catch ezmq:recv(Socket) of
+        {ok, [?MDP_WORKER_HEADER, ?MDP_REQUEST_CMD, Client, <<>>, Request]} ->
+            Worker ! {request, Client, Request},
+            recv_loop(Socket, Worker);
+        {ok, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]} ->
+            Worker ! {heartbeat, recv},
+            recv_loop(Socket, Worker);
+        {ok, [?MDP_WORKER_HEADER, ?MDP_DISCONNECT_CMD]} ->
+            Worker ! disconnect,
+            recv_loop(Socket, Worker);
+        {'EXIT', _Reason} ->
+            ok;
+        Reply ->
+            error_logger:warning_msg("Unexpected reply: ~p", [Reply]),
+            recv_loop(Socket, Worker)
     end.

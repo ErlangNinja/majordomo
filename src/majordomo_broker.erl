@@ -32,8 +32,7 @@ start(Port) ->
                             workers = ets:new(workers, [public, {write_concurrency, true}]),
                             dispatchers = ets:new(dispatchers, [])
                         },
-                        RecvLoop = recv_loop(),
-                        RecvLoop(State)
+                        recv_loop(State)
                     end),
                     {ok, Socket};
                 {error, Reason} ->
@@ -55,24 +54,22 @@ start_link(Port) ->
 close(Socket) ->
     ezmq:close(Socket).
 
-recv_loop() ->
-    fun Loop(State) ->
-        case catch ezmq:recv(State#state.socket) of
-            {ok, {Id, [?MDP_CLIENT_HEADER | [<<"mmi.", MMIService/binary>> | Request]]}} ->
-                Loop(mmi_dispatch(Id, [<<"mmi.", MMIService/binary>> | Request], State));
-            {ok, {Id, [?MDP_CLIENT_HEADER | Request]}} ->
-                Loop(client_dispatch(Id, Request, State));
-            {ok, {Id, [?MDP_WORKER_HEADER | Reply]}} ->
-                Loop(worker_dispatch(Id, Reply, State));
-            {'EXIT', _Reason} ->
-                ok;
-            Message ->
-                error_logger:warning_msg("Unhandled message ~p", [Message]),
-                Loop(State)
-        end
+recv_loop(State) ->
+    case catch ezmq:recv(State#state.socket) of
+        {ok, {Id, [?MDP_CLIENT_HEADER | [<<"mmi.", MMIService/binary>> | Request]]}} ->
+            recv_loop(mmi_dispatch(Id, [<<"mmi.", MMIService/binary>> | Request], State));
+        {ok, {Id, [?MDP_CLIENT_HEADER | Request]}} ->
+            recv_loop(client_dispatch(Id, Request, State));
+        {ok, {Id, [?MDP_WORKER_HEADER | Reply]}} ->
+            recv_loop(worker_dispatch(Id, Reply, State));
+        {'EXIT', _Reason} ->
+            ok;
+        Message ->
+            error_logger:warning_msg("Unhandled message ~p", [Message]),
+            recv_loop(State)
     end.
 
-mmi_dispatch(Id, [?MMI_SERVICE, Service], State = #state{socket = Socket}) ->
+mmi_dispatch(Id, [?MMI_SERVICE, Service], State) ->
     {Dispatcher, NewState} = get_dispatcher_for_service(Service, State),
     Dispatcher ! {mmi_service, Id},
     NewState;
@@ -109,68 +106,65 @@ worker_dispatch(Id, [?MDP_DISCONNECT_CMD], State) ->
 worker_dispatch(_Id, _Reply, State) ->
     State.
 
-dispatcher() ->
-    fun
-        Dispatch(Service, State = #state{socket = Socket, workers = Workers}, Queue, [Worker | IdlePool], ActivePool) when Queue /= {[], []} ->
-            {{value, {Id, Request}}, SmallerQueue} = queue:out(Queue),
-            case ezmq:send(Socket, {Worker, [?MDP_WORKER_HEADER, ?MDP_REQUEST_CMD, erlang:term_to_binary(Id), <<>>, Request]}) of
-                ok ->
-                    Dispatch(Service, State, SmallerQueue, IdlePool, lists:append(ActivePool, [Worker]));
-                invalid_identity ->
-                    ets:delete(Workers, Worker),
-                    Dispatch(Service, State, Queue, IdlePool, ActivePool);
-                _ ->
-                    Dispatch(Service, State, Queue, lists:append(IdlePool, [Worker]), ActivePool)
+dispatch_loop(Service, State = #state{socket = Socket, workers = Workers}, Queue, [Worker | IdlePool], ActivePool) when Queue /= {[], []} ->
+    {{value, {Id, Request}}, SmallerQueue} = queue:out(Queue),
+    case ezmq:send(Socket, {Worker, [?MDP_WORKER_HEADER, ?MDP_REQUEST_CMD, erlang:term_to_binary(Id), <<>>, Request]}) of
+        ok ->
+            dispatch_loop(Service, State, SmallerQueue, IdlePool, lists:append(ActivePool, [Worker]));
+        invalid_identity ->
+            ets:delete(Workers, Worker),
+            dispatch_loop(Service, State, Queue, IdlePool, ActivePool);
+        _ ->
+            dispatch_loop(Service, State, Queue, lists:append(IdlePool, [Worker]), ActivePool)
+    end;
 
-            end;
-        Dispatch(Service, State = #state{socket = Socket, workers = Workers}, Queue, IdlePool, ActivePool) ->
-            receive
-                {ready, Id} ->
-                    IsMember = lists:member(Id, IdlePool) or lists:member(Id, ActivePool),
-                    if
-                        IsMember ->
-                            ezmq:send(Socket, {Id, [?MDP_WORKER_HEADER, ?MDP_DISCONNECT_CMD]}),
-                            ets:delete(Workers, Id),
-                            Dispatch(Service, State, Queue, lists:delete(Id, IdlePool), lists:delete(Id, ActivePool));
-                        true ->
-                            ets:insert(Workers, {Id, self(), get_expiration()}),
-                            Dispatch(Service, State, Queue, lists:append(IdlePool, [Id]), ActivePool)
-                    end;
-                {request, Id, Request} ->
-                    Dispatch(Service, State, queue:in({Id, Request}, Queue), IdlePool, ActivePool);
-                {reply, Id, Client, Reply} ->
-                    ets:insert(State#state.workers, {Id, self(), get_expiration()}),
-                    ezmq:send(Socket, {erlang:binary_to_term(Client), [?MDP_CLIENT_HEADER, Service, Reply]}),
-                    Dispatch(Service, State, Queue, lists:append(IdlePool, [Id]), lists:delete(Id, ActivePool));
-                {heartbeat, Id} ->
-                    ets:insert(State#state.workers, {Id, self(), get_expiration()}),
-                    case lists:member(Id, IdlePool) of
-                        true ->
-                            Dispatch(Service, State, Queue, lists:append(lists:delete(Id, IdlePool), [Id]), ActivePool);
-                        false ->
-                            Dispatch(Service, State, Queue, IdlePool, lists:append(lists:delete(Id, ActivePool), [Id]))
-                    end;
-                {disconnect, Id} ->
+dispatch_loop(Service, State = #state{socket = Socket, workers = Workers}, Queue, IdlePool, ActivePool) ->
+    receive
+        {ready, Id} ->
+            IsMember = lists:member(Id, IdlePool) or lists:member(Id, ActivePool),
+            if
+                IsMember ->
+                    ezmq:send(Socket, {Id, [?MDP_WORKER_HEADER, ?MDP_DISCONNECT_CMD]}),
                     ets:delete(Workers, Id),
-                    Dispatch(Service, State, Queue, lists:delete(Id, IdlePool), lists:delete(Id, ActivePool));
-                {heartbeat_send} ->
-                    {Expired, IdleRemaining} = get_expired_workers(IdlePool, State),
-                    [ets:delete(Workers, Id) || Id <- Expired],
-                    [ezmq:send(Socket, {Id, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]}) || Id <- IdleRemaining],
-                    Dispatch(Service, State, Queue, IdleRemaining, ActivePool);
-                {mmi_service, Id} ->
-                    WorkerCount = length(IdlePool) + length(ActivePool),
-                    if
-                        WorkerCount == 0 ->
-                            ezmq:send(Socket, {Id, [?MDP_CLIENT_HEADER, ?MMI_SERVICE, ?MMI_NOT_FOUND]});
-                        true ->
-                            ezmq:send(Socket, {Id, [?MDP_CLIENT_HEADER, ?MMI_SERVICE, ?MMI_FOUND]})
-                    end,
-                    Dispatch(Service, State, Queue, IdlePool, ActivePool);
-                Message ->
-                    error_logger:warning_msg("Unexpected message: ~p", [Message]),
-                    Dispatch(Service, State, Queue, IdlePool, ActivePool)
-            end
+                    dispatch_loop(Service, State, Queue, lists:delete(Id, IdlePool), lists:delete(Id, ActivePool));
+                true ->
+                    ets:insert(Workers, {Id, self(), get_expiration()}),
+                    dispatch_loop(Service, State, Queue, lists:append(IdlePool, [Id]), ActivePool)
+            end;
+        {request, Id, Request} ->
+            dispatch_loop(Service, State, queue:in({Id, Request}, Queue), IdlePool, ActivePool);
+        {reply, Id, Client, Reply} ->
+            ets:insert(State#state.workers, {Id, self(), get_expiration()}),
+            ezmq:send(Socket, {erlang:binary_to_term(Client), [?MDP_CLIENT_HEADER, Service, Reply]}),
+            dispatch_loop(Service, State, Queue, lists:append(IdlePool, [Id]), lists:delete(Id, ActivePool));
+        {heartbeat, Id} ->
+            ets:insert(State#state.workers, {Id, self(), get_expiration()}),
+            case lists:member(Id, IdlePool) of
+                true ->
+                    dispatch_loop(Service, State, Queue, lists:append(lists:delete(Id, IdlePool), [Id]), ActivePool);
+                false ->
+                    dispatch_loop(Service, State, Queue, IdlePool, lists:append(lists:delete(Id, ActivePool), [Id]))
+            end;
+        {disconnect, Id} ->
+            ets:delete(Workers, Id),
+            dispatch_loop(Service, State, Queue, lists:delete(Id, IdlePool), lists:delete(Id, ActivePool));
+        {heartbeat_send} ->
+            {Expired, IdleRemaining} = get_expired_workers(IdlePool, State),
+            [ets:delete(Workers, Id) || Id <- Expired],
+            [ezmq:send(Socket, {Id, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]}) || Id <- IdleRemaining],
+            dispatch_loop(Service, State, Queue, IdleRemaining, ActivePool);
+        {mmi_service, Id} ->
+            WorkerCount = length(IdlePool) + length(ActivePool),
+            if
+                WorkerCount == 0 ->
+                    ezmq:send(Socket, {Id, [?MDP_CLIENT_HEADER, ?MMI_SERVICE, ?MMI_NOT_FOUND]});
+                true ->
+                    ezmq:send(Socket, {Id, [?MDP_CLIENT_HEADER, ?MMI_SERVICE, ?MMI_FOUND]})
+            end,
+            dispatch_loop(Service, State, Queue, IdlePool, ActivePool);
+        Message ->
+            error_logger:warning_msg("Unexpected message: ~p", [Message]),
+            dispatch_loop(Service, State, Queue, IdlePool, ActivePool)
     end.
 
 get_expiration() ->
@@ -185,7 +179,7 @@ get_dispatcher_for_service(Service, State = #state{dispatchers = Dispatchers}) -
         [{Service, Dispatcher}] ->
             {Dispatcher, State};
         [] ->
-            Dispatcher = spawn(fun() -> D = dispatcher(), D(Service, State, queue:new(), [], []) end),
+            Dispatcher = spawn(fun() -> dispatch_loop(Service, State, queue:new(), [], []) end),
             timer:send_interval(?HEARTBEAT_INTERVAL, Dispatcher, {heartbeat_send}),
             ets:insert(Dispatchers, {Service, Dispatcher}),
             {Dispatcher, State}
