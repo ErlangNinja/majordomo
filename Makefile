@@ -46,6 +46,9 @@ $(REBAR):
 deps: $(REBAR)
 	@$(REBAR) get-deps
 
+docs: $(REBAR)
+	@$(REBAR) get-deps compile doc
+
 compile: deps
 	@$(REBAR) compile
 
@@ -57,11 +60,11 @@ test: compile
 	@$(REBAR) eunit skip_deps=true
 
 clean: $(REBAR)
-	@rm -rf rel *.dump dialyzer.log $(DEPS_PLT)
+	@rm -rf rel .rebar .eunit *.dump dialyzer.log $(DEPS_PLT)
 	@$(REBAR) clean
 
 distclean:
-	@rm -rf ebin deps rel *.dump dialyzer.log $(DEPS_PLT) $(REBAR) $(RELX)
+	@rm -rf ebin deps rel .rebar .eunit *.dump dialyzer.log $(DEPS_PLT) $(REBAR) $(RELX)
 
 $(OTP_PLT):
 	@dialyzer --verbose --build_plt --output_plt $(OTP_PLT) --apps $(OTP_ROOT)/lib

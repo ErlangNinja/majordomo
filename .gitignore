@@ -6,6 +6,7 @@ rel
 deps
 ebin
 .eunit
+.rebar
 
 dialyzer.log
 *.dump

@@ -1,0 +1,23 @@
+%% -*- erlang -*-
+%%
+%% This helper script checks if doc is being built, otherwise removes edoc dep.
+%% To build docs, call `rebar get-deps compile doc`
+%% Assumes that the rebar config is bound to CONFIG
+
+case lists:member("doc", init:get_plain_arguments()) of
+    false ->
+        {ok,C1} = file:script(filename:join(filename:dirname(SCRIPT), "remove_deps.script"), [{'CONFIG', CONFIG}, {'DEPS', [edown]}]),
+        C1;
+    true ->
+        application:start(crypto),
+        application:start(public_key),
+        application:start(ssl),
+        application:start(inets),
+        case code:lib_dir(edown) of
+            {error, bad_name} ->
+                D = {edown, ".*", {git, "git://github.com/esl/edown.git", "HEAD"}},
+                lists:keystore(deps, 1, CONFIG, {deps, [D]});
+            _ ->
+                CONFIG
+        end
+end.

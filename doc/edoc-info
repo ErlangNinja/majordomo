@@ -1,0 +1,5 @@
+%% encoding: UTF-8
+{application,majordomo}.
+{packages,[]}.
+{modules,[majordomo_app,majordomo_broker,majordomo_client,majordomo_sup,
+          majordomo_worker]}.
