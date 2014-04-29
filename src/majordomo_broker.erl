@@ -83,6 +83,11 @@ client_dispatch(Id, [Service, Request], State) ->
     Dispatcher ! {request, Id, Request},
     NewState;
 
+client_dispatch(Id, [From, Service, Request], State) ->
+    {Dispatcher, NewState} = get_dispatcher_for_service(Service, State),
+    Dispatcher ! {request, Id, From, Request},
+    NewState;
+
 client_dispatch(_Id, _Request, State) ->
     State.
 
@@ -133,9 +138,16 @@ dispatch_loop(Service, State = #state{socket = Socket, workers = Workers}, Queue
             end;
         {request, Id, Request} ->
             dispatch_loop(Service, State, queue:in({Id, Request}, Queue), IdlePool, ActivePool);
+        {request, Id, From, Request} ->
+            dispatch_loop(Service, State, queue:in({{Id, From}, Request}, Queue), IdlePool, ActivePool);
         {reply, Id, Client, Reply} ->
             ets:insert(State#state.workers, {Id, self(), get_expiration()}),
-            ezmq:send(Socket, {erlang:binary_to_term(Client), [?MDP_CLIENT_HEADER, Service, Reply]}),
+            case erlang:binary_to_term(Client) of
+                {ClientId, From} ->
+                    ezmq:send(Socket, {ClientId, [?MDP_CLIENT_HEADER, From, Service, Reply]});
+                ClientId ->
+                    ezmq:send(Socket, {ClientId, [?MDP_CLIENT_HEADER, Service, Reply]})
+            end,
             dispatch_loop(Service, State, Queue, lists:append(IdlePool, [Id]), lists:delete(Id, ActivePool));
         {heartbeat, Id} ->
             ets:insert(State#state.workers, {Id, self(), get_expiration()}),

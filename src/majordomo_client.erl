@@ -12,7 +12,10 @@
 -include("majordomo.hrl").
 
 %% API
--export([start/3, close/1, send/3]).
+-export([start/2, start/3, close/1, send/3, send/4]).
+
+start(Address, Port) ->
+    start(Address, Port, self()).
 
 start(Address, Port, Dispatch) when is_pid(Dispatch) ->
     start(Address, Port, fun(Message) -> Dispatch ! Message end);
@@ -27,10 +30,24 @@ close(Socket) ->
     ezmq:close(Socket).
 
 send(Socket, Service, Request) ->
-    ok = ezmq:send(Socket, [?MDP_CLIENT_HEADER, Service, Request]).
+    ezmq:send(Socket, [?MDP_CLIENT_HEADER, Service, Request]).
+
+send(ReplyTo, Socket, Service, Request) ->
+    CorrelationID = erlang:make_ref(),
+    From = erlang:term_to_binary({ReplyTo, CorrelationID}),
+    case ezmq:send(Socket, [?MDP_CLIENT_HEADER, From, Service, Request]) of
+        ok ->
+            {ok, CorrelationID};
+        Other ->
+            Other
+    end.
 
 recv_loop(Socket, Dispatch) ->
     case catch ezmq:recv(Socket) of
+        {ok, [?MDP_CLIENT_HEADER, From, Service, Response]} ->
+            {ReplyTo, CorrelationID} = erlang:binary_to_term(From),
+            ReplyTo ! {reply, CorrelationID, Service, Response},
+            recv_loop(Socket, Dispatch);
         {ok, [?MDP_CLIENT_HEADER, Service, Response]} ->
             Dispatch({reply, Service, Response}),
             recv_loop(Socket, Dispatch);

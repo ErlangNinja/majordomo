@@ -54,15 +54,16 @@ send_loop(_Socket, _Counter, 0) ->
     ok;
 
 send_loop(Socket, Counter, Count) ->
-    majordomo_client:send(Socket, <<"echo">>, <<"test">>),
-    Counter ! {request, <<"echo">>, <<"test">>},
+    Counter ! majordomo_client:send(Counter, Socket, <<"echo">>, <<"test">>),
     send_loop(Socket, Counter, Count - 1).
 
 count_loop(Requests, Replies) ->
     receive
-        {request, _Service, _Request} ->
+        {ok, _CorrelationID} ->
             count_loop(Requests + 1, Replies);
         {reply, _Service, _Reply} ->
+            count_loop(Requests, Replies + 1);
+        {reply, _CorrelationID, _Service, _Reply} ->
             count_loop(Requests, Replies + 1);
         {From, get_count} ->
             From ! {count, Requests, Replies},
