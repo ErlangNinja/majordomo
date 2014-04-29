@@ -152,6 +152,7 @@ dispatch_loop(Service, State = #state{socket = Socket, workers = Workers}, Queue
             {Expired, IdleRemaining} = get_expired_workers(IdlePool, State),
             [ets:delete(Workers, Id) || Id <- Expired],
             [ezmq:send(Socket, {Id, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]}) || Id <- IdleRemaining],
+            [ezmq:send(Socket, {Id, [?MDP_WORKER_HEADER, ?MDP_HEARTBEAT_CMD]}) || Id <- ActivePool],
             dispatch_loop(Service, State, Queue, IdleRemaining, ActivePool);
         {mmi_service, Id} ->
             WorkerCount = length(IdlePool) + length(ActivePool),
