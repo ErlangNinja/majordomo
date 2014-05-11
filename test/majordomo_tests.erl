@@ -25,63 +25,54 @@ setup() ->
     application:start(sasl),
     application:start(gen_listener_tcp),
     application:start(ezmq),
-    majordomo_broker:start(5555),
-    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
-    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
-    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
-    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
-    Counter = spawn(fun() -> count_loop(0, 0) end),
-    Socket = majordomo_client:start("127.0.0.1", 5555, Counter),
-    {Socket, Counter}.
 
-teardown({Socket, Counter}) ->
-    Counter ! stop,
+    majordomo_broker:start(5555),
+    Socket = majordomo_client:start("127.0.0.1", 5555, self()),
+
+    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
+    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
+    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
+    majordomo_worker:start("127.0.0.1", 5555, <<"echo">>, fun(Request) -> Request end),
+
+    Socket.
+
+teardown(Socket) ->
     majordomo_client:close(Socket),
     application:stop(ezmq).
 
-tests({Socket, Callback}) ->
-    [{timeout, 60, fun() -> test_client(Socket, Callback) end}].
+tests(Socket) ->
+    [{timeout, 60, fun() -> test_client(Socket) end}].
 
-test_client(Socket, Counter) ->
+test_client(Socket) ->
     Count = 10000,
     Start = now(),
-    spawn(fun() -> send_loop(Socket, Counter, Count) end),
-    wait_loop(Counter, Count),
+    ReplyTo = self(),
+    spawn(fun() -> send_loop(Socket, ReplyTo, Count) end),
+    {_Requests, _Replies, Size} = recv_loop(Count, 0, 0, 0),
     ?debugFmt("~p msg/sec", [Count * 1000000 / timer:now_diff(now(), Start)]),
+    ?debugFmt("~p bytes/sec", [Size * 1000000 / timer:now_diff(now(), Start)]),
     ok.
 
 send_loop(_Socket, _Counter, 0) ->
     ok;
 
-send_loop(Socket, Counter, Count) ->
-    Counter ! majordomo_client:send(Counter, Socket, <<"echo">>, <<"test">>),
-    send_loop(Socket, Counter, Count - 1).
+send_loop(Socket, ReplyTo, Count) ->
+    Data = crypto:strong_rand_bytes(random:uniform(1000)),
+    ReplyTo ! majordomo_client:send(ReplyTo, Socket, <<"echo">>, Data),
+    send_loop(Socket, ReplyTo, Count - 1).
 
-count_loop(Requests, Replies) ->
+recv_loop(Limit, Requests, Replies, Size) when Limit == Replies ->
+    {Requests, Replies, Size};
+
+recv_loop(Limit, Requests, Replies, Size) ->
     receive
         {ok, _CorrelationID} ->
-            count_loop(Requests + 1, Replies);
-        {reply, _Service, _Reply} ->
-            count_loop(Requests, Replies + 1);
-        {reply, _CorrelationID, _Service, _Reply} ->
-            count_loop(Requests, Replies + 1);
-        {From, get_count} ->
-            From ! {count, Requests, Replies},
-            count_loop(Requests, Replies);
-        stop ->
-            ok;
+            recv_loop(Limit, Requests + 1, Replies, Size);
+        {reply, <<"echo">>, Reply} ->
+            recv_loop(Limit, Requests, Replies + 1, Size + size(Reply));
+        {reply, _CorrelationID, <<"echo">>, Reply} ->
+            recv_loop(Limit, Requests, Replies + 1, Size + size(Reply));
         Response ->
             ?debugFmt("Response: ~p", [Response]),
-            count_loop(Requests, Replies)
-    end.
-
-wait_loop(Counter, Count) ->
-    Counter ! {self(), get_count},
-    receive
-        {count, _Requests, Count} ->
-            Count;
-        {count, Requests, Replies} ->
-            ?debugFmt("~p requests, ~p replies", [Requests, Replies]),
-            timer:sleep(100),
-            wait_loop(Counter, Count)
+            recv_loop(Limit, Requests, Replies, Size)
     end.

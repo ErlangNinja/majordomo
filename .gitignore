@@ -11,3 +11,4 @@ ebin
 dialyzer.log
 *.dump
 *.plt
+reference

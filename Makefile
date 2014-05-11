@@ -49,8 +49,8 @@ deps: $(REBAR)
 docs: $(REBAR)
 	@$(REBAR) get-deps compile doc
 
-compile: deps
-	@$(REBAR) compile
+compile: $(REBAR)
+	@$(REBAR) get-deps compile
 
 release: compile $(RELX)
 	@rm -rf rel
