@@ -1,0 +1,36 @@
+machine:
+  environment:
+    PATH: ${HOME}/extras/bin:${HOME}/extras/otp/17.5/bin:${PATH}
+    TZ: Europe/Stockholm
+
+general:
+  branches:
+    ignore:
+      - gh-pages
+  artifacts:
+    - .eunit/eprof.log
+    - .eunit/*.html
+
+dependencies:
+  cache_directories:
+    - ~/extras
+    - deps
+  pre:
+    - curl -L https://raw.githubusercontent.com/ehedenst/circleci/master/kerl.sh | sh
+    - if [ ! -d ~/extras/otp/17.5 ]; then kerl build 17.5 17.5; kerl install 17.5 ~/extras/otp/17.5; fi
+  override:
+    - make deps
+
+test:
+  override:
+    - make test
+  post:
+    - mv .eunit/*.xml $CIRCLE_TEST_REPORTS
+
+deployment:
+  release:
+    branch: master
+    commands:
+      - gem install fpm
+      - curl -L https://raw.githubusercontent.com/ehedenst/circleci/master/github-release.sh | sh
+      - make release

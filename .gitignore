@@ -1,7 +1,9 @@
 env.mak
 rebar
 relx
+rlx_prv_cmd.beam
 
+log
 rel
 deps
 ebin
@@ -11,4 +13,3 @@ ebin
 dialyzer.log
 *.dump
 *.plt
-reference

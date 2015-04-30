@@ -1,0 +1,19 @@
+## Name of the node
+-name denrei@127.0.0.1
+
+## Cookie for distributed erlang
+-setcookie EZ9JUWO0wtL37xUv3H1W
+
+## Enable kernel poll and a few async threads
++K true
++A 64
++P 262144
+
+## enable smp support
+-smp auto
+
+## Increase number of concurrent ports/sockets
+-env ERL_MAX_PORTS 16384
+
+## Tweak GC to run more often
+-env ERL_FULLSWEEP_AFTER 10

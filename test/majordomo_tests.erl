@@ -22,8 +22,10 @@ majordomo_test_() ->
         fun tests/1}.
 
 setup() ->
+
     application:start(sasl),
     application:start(gen_listener_tcp),
+    lager:start(),
     application:start(ezmq),
 
     majordomo_broker:start(5555),

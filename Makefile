@@ -1,24 +1,10 @@
-# Copyright (c) 2014, Erik Hedenström <erik@hedenstroem.com>
-#
-# Permission to use, copy, modify, and/or distribute this software for any
-# purpose with or without fee is hereby granted, provided that the above
-# copyright notice and this permission notice appear in all copies.
-#
-# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
-# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
-# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
-# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
 OTP_RELEASE := $(shell export PATH="$(PATH)"; erl -noshell -eval 'io:format(erlang:system_info(otp_release)), halt().')
 OTP_ROOT := $(shell export PATH="$(PATH)"; erl -noshell -eval 'io:format(code:root_dir()), halt().')
 OTP_PLT := .otp_$(OTP_RELEASE).plt
 DEPS_PLT := .deps.plt
 
 REBAR ?= $(CURDIR)/rebar
-REBAR_URL ?= https://github.com/rebar/rebar/releases/download/2.2.0/rebar
+REBAR_URL ?= https://github.com/rebar/rebar/releases/download/2.5.1/rebar
 define get_rebar
 	curl -s -L -o $(REBAR) $(REBAR_URL) || rm $(REBAR)
 	chmod +x $(REBAR)
@@ -26,57 +12,66 @@ endef
 export REBAR
 
 RELX ?= $(CURDIR)/relx
-RELX_URL ?= https://github.com/erlware/relx/releases/download/v0.6.0/relx
+RELX_URL ?= https://github.com/erlware/relx/releases/download/v1.0.4/relx
 define get_relx
 	curl -s -L -o $(RELX) $(RELX_URL) || rm $(RELX)
 	chmod +x $(RELX)
 endef
 export RELX
 
+RLX_PRV_CMD ?= $(CURDIR)/rlx_prv_cmd.beam
+RLX_PRV_CMD_URL ?= https://github.com/erlangninja/rlx_prv_cmd/releases/download/0.1.0/rlx_prv_cmd.beam
+define get_rlx_prv_cmd
+	curl -s -L -o $(RLX_PRV_CMD) $(RLX_PRV_CMD_URL) || rm $(RLX_PRV_CMD)
+endef
+export RLX_PRV_CMD
+
 -include env.mak
 
-all: release
+all: test
 
-$(RELX):
+$(RLX_PRV_CMD):
+	@$(call get_rlx_prv_cmd)
+
+$(RELX): $(RLX_PRV_CMD)
 	@$(call get_relx)
 
 $(REBAR):
 	@$(call get_rebar)
 
 deps: $(REBAR)
-	@$(REBAR) get-deps
+	@$(REBAR) --quiet get-deps
 
 docs: $(REBAR)
-	@$(REBAR) get-deps compile doc
+	@$(REBAR) --quiet get-deps compile doc
 
-compile: $(REBAR)
-	@$(REBAR) get-deps compile
+compile: deps
+	@$(REBAR) --quiet compile
+
+test: compile
+	@ERL_AFLAGS="-args_file etc/vm.args -config etc/test.config" $(REBAR) --quiet eunit skip_deps=true
 
 release: compile $(RELX)
 	@rm -rf rel
 	@$(RELX) -c relx.config -o rel $(RELX_OPTS) release tar
 
-test: compile
-	@$(REBAR) eunit skip_deps=true
-
 clean: $(REBAR)
 	@rm -rf rel .rebar .eunit *.dump dialyzer.log $(DEPS_PLT)
-	@$(REBAR) clean
+	@$(REBAR) --quiet clean
 
 distclean:
-	@rm -rf ebin deps rel .rebar .eunit *.dump dialyzer.log $(DEPS_PLT) $(REBAR) $(RELX)
+	@rm -rf ebin deps log rel .rebar .eunit *.dump dialyzer.log $(DEPS_PLT) $(REBAR) $(RELX) $(RLX_PRV_CMD)
 
 $(OTP_PLT):
 	@dialyzer --verbose --build_plt --output_plt $(OTP_PLT) --apps $(OTP_ROOT)/lib
 
-$(DEPS_PLT): $(REBAR)
-	@$(REBAR) get-deps compile
+$(DEPS_PLT): compile
 	@dialyzer --verbose --build_plt --output_plt $(DEPS_PLT) --apps deps
 
 dialyzer: $(OTP_PLT) $(DEPS_PLT)
-	@$(REBAR) compile skip_deps=true
+	@$(REBAR) --quiet compile skip_deps=true
 	@dialyzer --no_check_plt -Wno_match -Wno_return --plts $(OTP_PLT) $(DEPS_PLT) -- ebin | tee dialyzer.log
 
 console:
-	@$(REBAR) compile skip_deps=true
-	@erl -pa ebin -pa deps/*/ebin $(ERL_OPTS) -boot start_sasl
+	@$(REBAR) --quiet compile skip_deps=true
+	@erl -args_file etc/vm.args -config etc/sys.config -pa ebin -pa deps/*/ebin $(ERL_OPTS) -boot start_sasl
